@@ -50,9 +50,9 @@ Needs Git, Node.js, and pnpm. `pnpm inject` patches your existing Discord instal
   - **HA URL**: your Home Assistant WebSocket URL, e.g. `wss://homeassistant.local:8123/api/websocket`
   - **HA token**: the token from step 2
   - **Discord application ID**: from step 1
-  - **Printer name**: shown in Discord, e.g. `Nakagawa`
-  - **Printer entity prefix**: the part of your printer's entity IDs before `_print_status`. Find it in HA under Settings → Devices & Services → Entities, e.g. `basement_nakagawa` for `sensor.basement_nakagawa_print_status`
-  - **AMS entity prefixes**: comma-separated prefixes for your AMS units, e.g. `basement_ams_2_pro,basement_ams_ht`. Leave empty if you have no AMS
+  - **Printer name**: shown in Discord, e.g. `My Printer`
+  - **Printer entity prefix**: the part of your printer's entity IDs before `_print_status`. Find it in HA under Settings → Devices & Services → Entities, e.g. `my_printer` for `sensor.my_printer_print_status`
+  - **AMS entity prefixes**: comma-separated prefixes for your AMS units, e.g. `my_ams_2_pro,my_ams_ht`. Leave empty if you have no AMS
   - **Large / small image**: the numeric asset IDs from step 1, if you uploaded art
 - Changing the printer or AMS prefixes needs a plugin restart (toggle it off and on) to take effect. Other settings apply live.
 

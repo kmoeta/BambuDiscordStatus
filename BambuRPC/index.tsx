@@ -13,7 +13,7 @@ const settings = definePluginSettings({
     haUrl: {
         type: OptionType.STRING,
         description: "Home Assistant WebSocket URL",
-        default: "wss://ha.kitauji.dev/api/websocket",
+        default: "wss://homeassistant.local:8123/api/websocket",
     },
     haToken: {
         type: OptionType.STRING,
@@ -23,7 +23,7 @@ const settings = definePluginSettings({
     appId: {
         type: OptionType.STRING,
         description: "Discord application ID (discord.com/developers/applications)",
-        default: "1570146538343108729",
+        default: "",
     },
     largeImage: {
         type: OptionType.STRING,
@@ -38,17 +38,17 @@ const settings = definePluginSettings({
     printerName: {
         type: OptionType.STRING,
         description: "Printer name shown in Discord",
-        default: "Nakagawa",
+        default: "My Printer",
     },
     printerPrefix: {
         type: OptionType.STRING,
-        description: "Entity prefix for the printer, e.g. basement_nakagawa (the part before _print_status)",
-        default: "basement_nakagawa",
+        description: "Entity prefix for the printer (the part before _print_status), e.g. my_printer",
+        default: "",
     },
     amsPrefixes: {
         type: OptionType.STRING,
-        description: "Comma-separated entity prefixes for AMS units, e.g. basement_ams_2_pro,basement_ams_ht. Empty for no AMS.",
-        default: "basement_ams_2_pro,basement_ams_ht",
+        description: "Comma-separated entity prefixes for AMS units, e.g. my_ams_2_pro,my_ams_ht. Empty for no AMS.",
+        default: "",
     },
 });
 
@@ -244,7 +244,7 @@ function buildActivity(s: States, ams: AmsUnit[], idleIndex: number, finishAt: n
         // Drying cards keep their own countdown.
         if (!card.timestamps) card.timestamps = { end: rotateAt };
     } else {
-        card = { details: `Nakagawa: ${status}`, state: task, word: status };
+        card = { details: `${settings.store.printerName}: ${status}`, state: task, word: status };
     }
 
     const base: Record<string, unknown> = {
@@ -295,8 +295,8 @@ export default definePlugin({
         this.started = true;
         this.authFailed = false;
         this.reconnectDelay = 5000;
-        if (!settings.store.appId || !settings.store.haToken) {
-            logger.warn("Set your Discord application ID and HA token in the plugin settings first.");
+        if (!settings.store.appId || !settings.store.haToken || !settings.store.printerPrefix.trim()) {
+            logger.warn("Set your Discord application ID, HA token, and printer entity prefix in the plugin settings first.");
             return;
         }
         this.buildEntities();
@@ -319,7 +319,7 @@ export default definePlugin({
     // Entity IDs come from the printer and AMS prefixes in settings.
     // Changing them needs a plugin restart to take effect.
     buildEntities() {
-        const printerPrefix = settings.store.printerPrefix.trim() || "basement_nakagawa";
+        const printerPrefix = settings.store.printerPrefix.trim();
         const amsPrefixes = settings.store.amsPrefixes.split(",").map(p => p.trim()).filter(Boolean);
         this.printer = printerEntities(printerPrefix);
         this.ams = amsPrefixes.map(amsEntities);
@@ -333,12 +333,14 @@ export default definePlugin({
     // works from Discord's renderer where fetch() would be CORS-blocked.
     // Discord's CSP still blocks the host until Vencord allows it (first start).
     async ensureCspAndConnect() {
-        const origin = (() => {
-            try {
-                const u = new URL(settings.store.haUrl);
-                return `${u.protocol === "wss:" ? "https:" : "http:"}//${u.host}`;
-            } catch { return "https://ha.kitauji.dev"; }
-        })();
+        let origin: string;
+        try {
+            const u = new URL(settings.store.haUrl);
+            origin = `${u.protocol === "wss:" ? "https:" : "http:"}//${u.host}`;
+        } catch {
+            logger.warn("Home Assistant URL is not a valid WebSocket URL. Check it in the plugin settings.");
+            return;
+        }
         if (await VencordNative.csp.isDomainAllowed(origin, ["connect-src"])) {
             this.connect();
             return;
