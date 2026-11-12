@@ -185,8 +185,8 @@ function idleCard(s: States, ams: AmsUnit[], index: number): Card {
         const bits: string[] = [];
         const start = isoToMs(s.start), end = isoToMs(s.end);
         if (start && end) { const d = fmtDuration((end - start) / 60000); if (d) bits.push(d); }
-        const w = num(s.printWeight); if (w !== undefined) bits.push(`${w}g`);
-        const l = num(s.printLength); if (l !== undefined) bits.push(`${l}m`);
+        const w = num(s.printWeight); if (w !== undefined && w > 0) bits.push(`${w}g`);
+        const l = num(s.printLength); if (l !== undefined && l > 0) bits.push(`${l}m`);
         cards.push({ details: `Last print: ${task.slice(0, 100)}`, state: bits.join(" · ") || "Done", word: "Last print" });
     }
     // What's loaded (duplicates collapsed: "PLA Basic ×3").
@@ -315,8 +315,10 @@ export default definePlugin({
     reconnectDelay: 5000,
     authFailed: false,
     idleTimer: null as ReturnType<typeof setInterval> | null,
-    rotateTimerStartedAt: 0,
+    rotateAt: 0,
     idleIndex: 0,
+    lastPrintWeight: undefined as number | undefined,
+    lastPrintLength: undefined as number | undefined,
     finishSince: null as number | null,
     prevStatus: undefined as string | undefined,
     lastActivityJson: "",
@@ -336,10 +338,10 @@ export default definePlugin({
         }
         this.buildEntities();
         if (this.idleTimer) clearInterval(this.idleTimer);
-        this.rotateTimerStartedAt = Date.now();
-        this.idleTimer = setInterval(() => {
-            if (this.isIdleish()) { this.idleIndex++; this.refresh(); }
-        }, IDLE_ROTATE_MS);
+        this.rotateAt = Date.now() + IDLE_ROTATE_MS;
+        // Poll for rotation: refresh() advances the idle card when its time
+        // is up, so the countdown and the card always change together.
+        this.idleTimer = setInterval(() => { this.refresh(); }, 5000);
         this.ensureCspAndConnect();
     },
 
@@ -465,16 +467,6 @@ export default definePlugin({
         };
     },
 
-    // True when the presence is showing (or should show) an idle card:
-    // actually idle, or finished more than 10 min ago.
-    isIdleish() {
-        const status = (this.states[this.printer.status] ?? "").toLowerCase();
-        if (status === "idle") return true;
-        if (status !== "finish") return false;
-        const finishAt = isoToMs(this.states[this.printer.end]) ?? this.finishSince ?? undefined;
-        return finishAt !== undefined && Date.now() - finishAt > FINISH_TO_IDLE_MS;
-    },
-
     refresh() {
         const short: States = {};
         for (const [key, entityId] of Object.entries(this.printer))
@@ -487,6 +479,20 @@ export default definePlugin({
             if (toast) showToast(toast);
         }
         this.prevStatus = status;
+        // HA resets print_weight/print_length to 0 once a print ends, so
+        // remember the live values while the print runs; the idle "Last
+        // print" card reads them back once the sensors have reset.
+        const liveW = parseFloat(short.printWeight ?? "");
+        const liveL = parseFloat(short.printLength ?? "");
+        if (["running", "prepare", "slicing", "pause"].includes(status)) {
+            if (!isNaN(liveW) && liveW > 0) this.lastPrintWeight = liveW;
+            if (!isNaN(liveL) && liveL > 0) this.lastPrintLength = liveL;
+        } else if (status === "idle" || status === "finish") {
+            if ((isNaN(liveW) || liveW === 0) && this.lastPrintWeight !== undefined)
+                short.printWeight = String(this.lastPrintWeight);
+            if ((isNaN(liveL) || liveL === 0) && this.lastPrintLength !== undefined)
+                short.printLength = String(this.lastPrintLength);
+        }
         const amsUnits: AmsUnit[] = this.ams.map(a => ({
             label: a.label,
             drying: this.states[a.drying],
@@ -496,13 +502,19 @@ export default definePlugin({
             trays: a.trays.map(t => this.states[t]),
         }));
         const finishAt = isoToMs(short.end) ?? this.finishSince ?? undefined;
-        // Next rotation tick on the 30s interval's schedule (anchored to
-        // when it was created). Untimed rotation cards count down to it.
-        // Stable between ticks, so the dispatch dedupe still holds.
-        if (!this.rotateTimerStartedAt) this.rotateTimerStartedAt = Date.now();
-        const elapsed = Date.now() - this.rotateTimerStartedAt;
-        const rotateAt = this.rotateTimerStartedAt + (Math.floor(elapsed / IDLE_ROTATE_MS) + 1) * IDLE_ROTATE_MS;
-        this.pushActivity(buildActivity(short, amsUnits, this.idleIndex, finishAt, rotateAt));
+        // Advance the idle rotation when the current card's time is up.
+        // This is the single place that moves the rotation, so the
+        // countdown end and the card always change together: a state
+        // change can never move the end without moving the card, and the
+        // end can never go stale while the same card is still showing
+        // (which is what made Discord fall back to counting up).
+        const isRotation = status === "idle" ||
+            (status === "finish" && finishAt !== undefined && Date.now() - finishAt > FINISH_TO_IDLE_MS);
+        if (isRotation && (!this.rotateAt || this.rotateAt <= Date.now())) {
+            this.idleIndex++;
+            this.rotateAt = Date.now() + IDLE_ROTATE_MS;
+        }
+        this.pushActivity(buildActivity(short, amsUnits, this.idleIndex, finishAt, this.rotateAt));
     },
 
     pushActivity(activity: Record<string, unknown> | "clear" | null) {
