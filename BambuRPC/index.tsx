@@ -105,7 +105,7 @@ function amsEntities(prefix: string) {
     };
 }
 
-// "basement_ams_2_pro" -> "AMS 2 Pro", "basement_ams_ht" -> "AMS HT"
+// "my_ams_2_pro" -> "AMS 2 Pro", "my_ams_ht" -> "AMS HT"
 function amsLabel(prefix: string): string {
     const idx = prefix.lastIndexOf("ams_");
     const tail = idx >= 0 ? prefix.slice(idx + 4) : prefix;
