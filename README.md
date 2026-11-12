@@ -4,8 +4,10 @@ Discord Rich Presence for a Bambu Lab printer, pulled live from Home Assistant. 
 
 What it shows, as `Watching <printer name>`:
 
-- Printing: `Printing "Object Name"` and `62% · Layer 40/65 · 41m left`, with Discord's own progress bar
+- Printing: `Printing "Object Name"` and `62% · Layer 40/65 · PETG Basic · 41m left`, with Discord's own progress bar
 - `Print finished`, `Print failed`, `Paused`
+- `Printer error` when the printer reports an HMS or print error
+- A Discord notification when a print finishes or fails
 - When idle it rotates every 30 seconds through drying status, cooldown temps, last print, loaded filament, AMS humidity, and total print time
 - Clears itself when the printer goes offline
 
@@ -54,6 +56,7 @@ Needs Git, Node.js, and pnpm. `pnpm inject` patches your existing Discord instal
   - **Printer entity prefix**: the part of your printer's entity IDs before `_print_status`. Find it in HA under Settings → Devices & Services → Entities, e.g. `my_printer` for `sensor.my_printer_print_status`
   - **AMS entity prefixes**: comma-separated prefixes for your AMS units, e.g. `my_ams_2_pro,my_ams_ht`. Leave empty if you have no AMS
   - **Large / small image**: the numeric asset IDs from step 1, if you uploaded art
+  - **Notify on finish**: show a Discord notification when a print finishes or fails (on by default)
 - Changing the printer or AMS prefixes needs a plugin restart (toggle it off and on) to take effect. Other settings apply live.
 
 **First start:** a "Vencord Host Permissions" dialog will appear. Discord's Content Security Policy blocks connections to hosts that aren't on its allowlist, so the plugin asks Vencord to allow your HA host. Tick the "I fully trust" checkbox and click **Allow**, then relaunch Discord when asked. (This is Vencord's built-in permission flow, the same one its own MusicRichPresence plugin uses.)

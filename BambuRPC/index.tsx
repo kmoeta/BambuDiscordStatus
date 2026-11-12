@@ -5,7 +5,7 @@ import { definePluginSettings } from "@api/Settings";
 import { Logger } from "@utils/Logger";
 import { relaunch } from "@utils/native";
 import definePlugin, { OptionType } from "@utils/types";
-import { Alerts, FluxDispatcher } from "@webpack/common";
+import { Alerts, FluxDispatcher, showToast } from "@webpack/common";
 
 const logger = new Logger("BambuRPC");
 
@@ -50,6 +50,11 @@ const settings = definePluginSettings({
         description: "Comma-separated entity prefixes for AMS units, e.g. my_ams_2_pro,my_ams_ht. Empty for no AMS.",
         default: "",
     },
+    notifyOnFinish: {
+        type: OptionType.BOOLEAN,
+        description: "Show a Discord notification when a print finishes or fails",
+        default: true,
+    },
 });
 
 const FINISH_TO_IDLE_MS = 10 * 60 * 1000;
@@ -82,6 +87,9 @@ function printerEntities(prefix: string): Record<string, string> {
         end: s("end_time"),
         start: s("start_time"),
         online: b("online"),
+        printError: b("print_error"),
+        hmsError: b("hms_errors"),
+        activeFilament: s("active_tray"),
         chamberTemp: s("chamber_temperature"),
         nozzleTemp: s("nozzle_temperature"),
         bedTemp: s("bed_temperature"),
@@ -130,6 +138,10 @@ function fmtDuration(minutes: number | undefined): string | null {
 function shortFilament(s: string | undefined): string | null {
     if (!s || s === "unknown" || s === "unavailable" || s.toLowerCase() === "empty") return null;
     return s.replace(/^Bambu\s+/i, "").trim();
+}
+
+function cleanTask(s: string | undefined): string {
+    return (s ?? "").trim().replace(/\.stl$/i, "").trim().slice(0, 100);
 }
 
 function isoToMs(s: string | undefined): number | undefined {
@@ -199,12 +211,24 @@ function idleCard(s: States, ams: AmsUnit[], index: number): Card {
     return cards[index % cards.length];
 }
 
+// The toast to show when a print ends, or null. Only fires on a transition
+// out of a live print state, so starting the plugin on an already finished
+// print stays quiet.
+function finishToast(prevStatus: string | undefined, status: string, task: string): { text: string; variant: "success" | "critical" } | null {
+    if (prevStatus === undefined) return null;
+    if (!["running", "prepare", "slicing", "pause"].includes(prevStatus)) return null;
+    const label = task ? `: ${task}` : "";
+    if (status === "finish") return { text: `Print finished${label}`, variant: "success" };
+    if (status === "failed" || status === "error") return { text: `Print failed${label}`, variant: "critical" };
+    return null;
+}
+
 function buildActivity(s: States, ams: AmsUnit[], idleIndex: number, finishAt: number | undefined, rotateAt: number): Record<string, unknown> | "clear" | null {
     if (s.online === undefined && s.status === undefined) return null; // no data yet
     if (s.online === "off") return "clear";
 
     const status = (s.status ?? "unknown").toLowerCase();
-    const task = (s.task ?? "Unknown print").replace(/\.stl$/i, "").trim().slice(0, 100);
+    const task = cleanTask(s.task) || "Unknown print";
     const progress = s.progress ?? "0";
     const start = isoToMs(s.start);
     const end = isoToMs(s.end);
@@ -213,19 +237,28 @@ function buildActivity(s: States, ams: AmsUnit[], idleIndex: number, finishAt: n
     const remain = fmtRemaining(endMins);
 
     let card: Card;
-    if (status === "running" || status === "prepare" || status === "slicing") {
+    if (s.printError === "on" || s.hmsError === "on") {
+        // Active HMS or print error beats every other card.
+        const errTask = cleanTask(s.task);
+        card = { details: "Printer error", state: errTask || "Check the printer", word: "Printer error" };
+    } else if (status === "running" || status === "prepare" || status === "slicing") {
         // Watching shows Discord's own progress bar from start+end, so the
         // state line is just the numbers.
         const bits = [`${progress}%`];
         if (s.layer && s.total && s.layer !== "unknown" && s.total !== "unknown")
             bits.push(`Layer ${s.layer}/${s.total}`);
+        const filament = shortFilament(s.activeFilament);
+        if (filament) bits.push(filament);
         if (remain) bits.push(remain);
         const ts: Record<string, number> = {};
         if (start) ts.start = start;
         if (end) ts.end = end;
         card = { details: `Printing "${task}"`, state: bits.join(" · "), word: "Printing", timestamps: Object.keys(ts).length ? ts : undefined };
     } else if (status === "pause") {
-        card = { details: `Paused — ${task}`, state: `${progress}% · Layer ${s.layer ?? "?"}/${s.total ?? "?"}`, word: "Paused" };
+        const bits = [`${progress}%`, `Layer ${s.layer ?? "?"}/${s.total ?? "?"}`];
+        const filament = shortFilament(s.activeFilament);
+        if (filament) bits.push(filament);
+        card = { details: `Paused — ${task}`, state: bits.join(" · "), word: "Paused" };
         if (start) card.timestamps = { start };
     } else if (status === "finish") {
         // 10 min after the print ends, stop bragging and join the idle rotation.
@@ -285,6 +318,7 @@ export default definePlugin({
     rotateTimerStartedAt: 0,
     idleIndex: 0,
     finishSince: null as number | null,
+    prevStatus: undefined as string | undefined,
     lastActivityJson: "",
     started: false,
     printer: {} as Record<string, string>,
@@ -295,6 +329,7 @@ export default definePlugin({
         this.started = true;
         this.authFailed = false;
         this.reconnectDelay = 5000;
+        this.prevStatus = undefined;
         if (!settings.store.appId || !settings.store.haToken || !settings.store.printerPrefix.trim()) {
             logger.warn("Set your Discord application ID, HA token, and printer entity prefix in the plugin settings first.");
             return;
@@ -441,12 +476,17 @@ export default definePlugin({
     },
 
     refresh() {
-        const status = (this.states[this.printer.status] ?? "").toLowerCase();
-        if (status === "finish" && this.finishSince === null) this.finishSince = Date.now();
-        if (status !== "finish") this.finishSince = null;
         const short: States = {};
         for (const [key, entityId] of Object.entries(this.printer))
             short[key] = this.states[entityId];
+        const status = (short.status ?? "").toLowerCase();
+        if (status === "finish" && this.finishSince === null) this.finishSince = Date.now();
+        if (status !== "finish") this.finishSince = null;
+        if (settings.store.notifyOnFinish) {
+            const toast = finishToast(this.prevStatus, status, cleanTask(short.task));
+            if (toast) showToast(toast);
+        }
+        this.prevStatus = status;
         const amsUnits: AmsUnit[] = this.ams.map(a => ({
             label: a.label,
             drying: this.states[a.drying],
