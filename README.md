@@ -4,7 +4,7 @@ Discord Rich Presence for a Bambu Lab printer, pulled live from Home Assistant. 
 
 What it shows, as `Watching <printer name>`:
 
-- Printing: `Printing "Lab Rax 5 inch screen"` and `62% · Layer 40/65 · 41m left`, with Discord's own progress bar
+- Printing: `Printing "Object Name"` and `62% · Layer 40/65 · 41m left`, with Discord's own progress bar
 - `Print finished`, `Print failed`, `Paused`
 - When idle it rotates every 30 seconds through drying status, cooldown temps, last print, loaded filament, AMS humidity, and total print time
 - Clears itself when the printer goes offline
