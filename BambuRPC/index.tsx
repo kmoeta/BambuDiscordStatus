@@ -314,7 +314,7 @@ export default definePlugin({
     reconnectTimer: null as ReturnType<typeof setTimeout> | null,
     reconnectDelay: 5000,
     authFailed: false,
-    idleTimer: null as ReturnType<typeof setInterval> | null,
+    rotateTimer: null as ReturnType<typeof setTimeout> | null,
     rotateAt: 0,
     idleIndex: 0,
     lastPrintWeight: undefined as number | undefined,
@@ -337,17 +337,15 @@ export default definePlugin({
             return;
         }
         this.buildEntities();
-        if (this.idleTimer) clearInterval(this.idleTimer);
+        if (this.rotateTimer) clearTimeout(this.rotateTimer);
         this.rotateAt = Date.now() + IDLE_ROTATE_MS;
-        // Poll for rotation: refresh() advances the idle card when its time
-        // is up, so the countdown and the card always change together.
-        this.idleTimer = setInterval(() => { this.refresh(); }, 5000);
+        this.scheduleRotate();
         this.ensureCspAndConnect();
     },
 
     stop() {
         this.started = false;
-        if (this.idleTimer) { clearInterval(this.idleTimer); this.idleTimer = null; }
+        if (this.rotateTimer) { clearTimeout(this.rotateTimer); this.rotateTimer = null; }
         if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
         if (this.ws) { try { this.ws.close(); } catch { /* already closed */ } this.ws = null; }
         this.pushActivity("clear");
@@ -467,6 +465,20 @@ export default definePlugin({
         };
     },
 
+    // Schedule the next rotation for exactly when the current card's
+    // countdown ends, so the card swaps the moment it hits 0:00. Polling
+    // for it (even every 5s) left a gap after 0:00 where Discord fell back
+    // to counting up until the next poll.
+    scheduleRotate() {
+        if (this.rotateTimer) { clearTimeout(this.rotateTimer); this.rotateTimer = null; }
+        if (!this.started) return;
+        if (!this.rotateAt || this.rotateAt <= Date.now()) return;
+        this.rotateTimer = setTimeout(() => {
+            this.rotateTimer = null;
+            this.refresh();
+        }, this.rotateAt - Date.now());
+    },
+
     refresh() {
         const short: States = {};
         for (const [key, entityId] of Object.entries(this.printer))
@@ -515,6 +527,7 @@ export default definePlugin({
             this.rotateAt = Date.now() + IDLE_ROTATE_MS;
         }
         this.pushActivity(buildActivity(short, amsUnits, this.idleIndex, finishAt, this.rotateAt));
+        this.scheduleRotate();
     },
 
     pushActivity(activity: Record<string, unknown> | "clear" | null) {
